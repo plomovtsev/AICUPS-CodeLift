@@ -228,6 +228,9 @@ class Strategy extends BaseStrategy {
     }
 
     onTick(myPassengers, myElevators, enemyPassengers, enemyElevators) {
+        if (this.curTick % 200 === 0) {
+            this.debug(myElevators);
+        }
         let myPassengerz = myPassengers.map(p => Object.assign({}, p));
         let enemyPassengerz = enemyElevators.map(p => Object.assign({}, p));
         myElevators.forEach(elevator => {
