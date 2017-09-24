@@ -25,8 +25,10 @@ const GAME_LEN = 7200;
 
 const MAX_PLAN_LENGTH = 4;
 const LOGS = false;
+const AICUP_LOGS = true;
 
 let curTick = 0;
+let that;
 
 class Strategy extends BaseStrategy {
 
@@ -118,6 +120,7 @@ class Strategy extends BaseStrategy {
     }
 
     onTick(myPassengers, myElevators, enemyPassengers, enemyElevators) {
+        that = this;
         curTick += 1;
         if (curTick === 1)
             console.time("Execution time");
@@ -456,7 +459,9 @@ class Passenger {
 
 function log(text) {
     if (LOGS)
-        console.log(`[tick ${curTick}] ${text}`)
+        console.log(`[tick ${curTick}] ${text}`);
+    if (AICUP_LOGS)
+        that.debug(text);
 }
 
 function dropQuotes(s) {
