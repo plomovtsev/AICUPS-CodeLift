@@ -20,10 +20,11 @@ const CLOSE_DOORS_TICKS = 100;
 const OPEN_DOORS_TICKS = 100;
 const EMPTY_ONE_FLOOR_TICKS = 50;
 const TAKE_ENEMY_PASS_DELAY_TICKS = 40;
+const STOP_TICKS_AFTER_OPEN_DOORS = 40;
 const GAME_LEN = 7200;
 
 const MAX_PLAN_LENGTH = 4;
-const LOGS = true;
+const LOGS = false;
 
 let curTick = 0;
 
@@ -124,7 +125,7 @@ class Strategy extends BaseStrategy {
         dropPlansAboutNotWaitingPassengers(allPassengers);
         addXToElevators(myElevators); //delete this line when x will be added to api
         myElevators.forEach(elevator => {
-            if (elevator.state === EL_STATE.filling) {
+            if (shouldGeneratePlan(elevator)) {
                 //todo optimize:
                 //todo probably no need to recalc plan if all ppl elevator was waiting in prev tick are still going to it
                 const plan = this.generatePlan(elevator, filterPassengers(elevator, allPassengers));
@@ -262,6 +263,11 @@ function subtract(initial, subtractor) {
 
 function distinct(passengersToWait, i, arr) {
     return arr.findIndex(pass => pass.length === passengersToWait.length) === i;
+}
+
+function shouldGeneratePlan(elevator) {
+    return elevator.state === EL_STATE.filling &&
+        (elevator.timeOnFloor >= OPEN_DOORS_TICKS + STOP_TICKS_AFTER_OPEN_DOORS - 1 || curTick < 100);
 }
 
 // ---------------------------------------------------------------------------------------------------------------------|
