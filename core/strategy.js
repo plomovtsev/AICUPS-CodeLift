@@ -21,11 +21,14 @@ const OPEN_DOORS_TICKS = 100;
 const EMPTY_ONE_FLOOR_TICKS = 50;
 const TAKE_ENEMY_PASS_DELAY_TICKS = 40;
 const STOP_TICKS_AFTER_OPEN_DOORS = 40;
+const EXIT_FROM_ELEVATOR_TICKS = 40;
+const PHANTOM_TICKS = 500;
+const TIME_TO_AWAY = 500;
 const GAME_LEN = 7200;
 
-const MAX_PLAN_LENGTH = 4;
-const LOGS = false;
-const AICUP_LOGS = true;
+const MAX_PLAN_LENGTH = 5;
+const LOGS = true;
+const AICUP_LOGS = false;
 
 let curTick = 0;
 let that;
@@ -41,7 +44,8 @@ class Strategy extends BaseStrategy {
         const emulateAction = (action, elevator, passengers, curPlan) => {
             const tickAfterAction = curTick + curPlan.ticks + action.ticks;
             if (tickAfterAction <= GAME_LEN) { //add break on max plan ticks?
-                const {newElev, newPass} = emulate(elevator, passengers, action);
+                let {newElev, newPass} = emulate(elevator, passengers, action);
+                newPass = newPass.map(passengerz => removeWhoWontWait(newElev, passengerz));
                 _generatePlan(newElev, newPass, curPlan.addAction(action, elevator));
             }
         };
@@ -63,7 +67,6 @@ class Strategy extends BaseStrategy {
                 setAsBestIfBetter(curPlan);
             } else {
                 const curPassengersAmount = elevator.passengers.length;
-                // let canBuildPlanFurther = false;
                 //1. if there is someone on the floor, try to fill elevator with different amounts of passengers
                 //no need to try to wait passengers after waiting in prev action
                 if (passengers[elevator.floor].length &&
@@ -74,7 +77,6 @@ class Strategy extends BaseStrategy {
                         .map(n => passengers[elevator.floor].slice(0, n)) //take first (best) n passengers
                         .filter(distinct) //same passenger arrays will produce same plan points so ignore them
                         .forEach(passengersToWait => {
-                            // canBuildPlanFurther = true;
                             const waitAction = new WaitAction(elevator, passengersToWait);
                             emulateAction(waitAction, elevator, passengers, curPlan);
                         });
@@ -90,28 +92,16 @@ class Strategy extends BaseStrategy {
                     .forEach(passengerz => {
                         //there is somebody in elevator wanting on passengerz.floor
                         if (passengerz.length) {
-                            // canBuildPlanFurther = true;
                             const goAction = new GoAction(elevator, passengerz.floor, passengerz);
                             emulateAction(goAction, elevator, passengers, curPlan);
                         //there is no one in elevator wanting on passengerz.floor
                         //then check if someone is staying on that floor
-                        } else {
+                        } else if (passengerz.floor !== elevator.floor && passengers[passengerz.floor].length) {
                             const goAction = new GoAction(elevator, passengerz.floor);
-                            const goActionTicks = goAction.ticks; //calc one time for that block
-                            const passengersWillNotGoStairs = passengers[passengerz.floor].filter(p => {
-                                const delay = p.type === elevator.type ? 0 : TAKE_ENEMY_PASS_DELAY_TICKS;
-                                const time2come = Math.floor(Math.abs(p.x - elevator.x) / PAS_HORIZONTAL_SPEED) + 1;
-                                return p.timeToAway > goActionTicks + delay + time2come + 1;
-                            });
-                            if (passengerz.floor !== elevator.floor && passengersWillNotGoStairs.length) {
-                                // canBuildPlanFurther = true;
-                                emulateAction(goAction, elevator, passengers, curPlan);
-                            }
+                            emulateAction(goAction, elevator, passengers, curPlan);
                         }
                     });
-                // if (!canBuildPlanFurther) {
-                    setAsBestIfBetter(curPlan);
-                // }
+                setAsBestIfBetter(curPlan);
             }
         };
 
@@ -125,42 +115,67 @@ class Strategy extends BaseStrategy {
         if (curTick === 1)
             console.time("Execution time");
         const allPassengers = myPassengers.map(p => new Passenger(p)).concat(enemyPassengers.map(p => new Passenger(p)));
-        dropPlansAboutNotWaitingPassengers(allPassengers);
+        /*const allElevators = myElevators.concat(enemyElevators).map(el => {
+            const newElev = new Elevator(el);
+            newElev.setPassengers(el.passengers.map(p => new Passenger(p)));
+            return newElev;
+        });*/
+        // updatePhantomPassengers(allElevators, allPassengers);
         addXToElevators(myElevators); //delete this line when x will be added to api
-        myElevators.forEach(elevator => {
-            if (shouldGeneratePlan(elevator)) {
-                //todo optimize:
-                //todo probably no need to recalc plan if all ppl elevator was waiting in prev tick are still going to it
-                const plan = this.generatePlan(elevator, filterPassengers(elevator, allPassengers));
-                if (!plan.isEmpty()) {
-                    //have a plan -- execute it
-                    plan.actions[0].execute(elevator, myPassengers, enemyPassengers);
-                    markPassengersWhichElevatorPlanToWait(plan);
-                } else if (elevator.passengers.length) {
-                    //no plan in remaining time but have passengers -- lift them as max as can
-                    const passengersByDestFloor = groupBy(elevator.passengers, p => p.destFloor);
-                    const inTimePassengers = passengersByDestFloor.filter((pArr, destFloor) => {
-                        return pArr.length && (curTick + new GoAction(elevator, destFloor).ticks < GAME_LEN);
-                    });
-                    if (inTimePassengers.length) {
-                        let bestFloor = inTimePassengers[0][0].destFloor;
-                        let maxScore = new GoAction(elevator, bestFloor, inTimePassengers[0]).score;
-                        inTimePassengers.forEach(pArr => {
-                            const floor = pArr[0].destFloor;
-                            const score = new GoAction(elevator, floor, pArr).score;
-                            if (score > maxScore) {
-                                bestFloor = floor;
-                                maxScore = score;
-                            }
+        myElevators.forEach((elevator, ind) => {
+            const goingToAmount = allPassengers.filter(p => {
+                return p.elevator === elevator.id && p.state === PAS_STATE.movingToElevator;
+            }).length;
+            if (goingToAmount > 0 && allWhoWasInvitedIsGoing(elevator, goingToAmount) && curTick < 6499) {
+                //relax and wait for those who going to elevator
+                succeedInvitedCounter(elevator);
+            } else {
+                dropInvitedCounter(elevator);
+                if (isStartFillingStage(elevator, myElevators, allPassengers)) {
+                    let minFloor = [8, 7, 6, 5][ind] - Math.floor(curTick / 850);
+                    const visiblePassengers = filterReservedPassengers(elevator, allPassengers);
+                    const accessiblePassengers = removeWhoWontWait(elevator, visiblePassengers);
+                    const waitAction = new WaitAction(elevator, accessiblePassengers.filter(p => p.destFloor >= minFloor));
+                    waitAction.execute(elevator, myPassengers, enemyPassengers);
+                    reservePassengersForElevator(elevator, new Plan().addAction(waitAction));
+                } else if (shouldGeneratePlan(elevator)) {
+                    resetReserved(elevator);
+                    // const withPhantoms = injectPhantoms(allPassengers, elevator);
+                    const visiblePassengers = filterReservedPassengers(elevator, allPassengers);
+                    const accessiblePassengers = removeWhoWontWait(elevator, visiblePassengers);
+                    const plan = this.generatePlan(elevator, accessiblePassengers);
+                    if (!plan.isEmpty()) {
+                        //have a plan -- execute it
+                        plan.actions[0].execute(elevator, myPassengers, enemyPassengers);
+                        reservePassengersForElevator(elevator, plan);
+                    } else if (elevator.passengers.length) {
+                        //no plan in remaining time but have passengers -- lift them as max as can
+                        const passengersByDestFloor = groupBy(elevator.passengers, p => p.destFloor);
+                        const inTimePassengers = passengersByDestFloor.filter((pArr, destFloor) => {
+                            return pArr.length && (curTick + new GoAction(elevator, destFloor).ticks < GAME_LEN);
                         });
-                        log(`${new Elevator(elevator).toJSON()} no plan, lift someone to ${bestFloor} floor for ${maxScore} score`);
-                        elevator.goToFloor(bestFloor);
+                        if (inTimePassengers.length) {
+                            let bestFloor = inTimePassengers[0][0].destFloor;
+                            let maxScore = new GoAction(elevator, bestFloor, inTimePassengers[0]).score;
+                            inTimePassengers.forEach(pArr => {
+                                const floor = pArr[0].destFloor;
+                                const score = new GoAction(elevator, floor, pArr).score;
+                                if (score > maxScore) {
+                                    bestFloor = floor;
+                                    maxScore = score;
+                                }
+                            });
+                            log(`${new Elevator(elevator).toJSON()} no plan, lift someone to ${bestFloor} floor for ${maxScore} score`);
+                            elevator.goToFloor(bestFloor);
+                        } else {
+                            log(`${new Elevator(elevator).toJSON()} no plan and have passengers in elevator but no time to lift someone`);
+                        }
+                    } else {
+                        //no plan and no passengers -- go to potentially good floor
+                        const floor = curTick <= 1400 ? 1 : (curTick <= 6000 ? 5 : 9);
+                        log(`${new Elevator(elevator).toJSON()} no plan and no passengers in elevator, go to potentially good floor ${floor}`);
+                        elevator.goToFloor(floor);
                     }
-                } else {
-                    //no plan and no passengers -- go to potentially good floor
-                    log(`${new Elevator(elevator).toJSON()} no plan, passengers: ${JSON.stringify(groupPassengersByFloorAndSort(elevator, filterPassengers(elevator, allPassengers)))}`);
-                    const floor = curTick <= 1400 ? 1 : (curTick <= 6000 ? 5 : 9);
-                    elevator.goToFloor(floor);
                 }
             }
         });
@@ -169,30 +184,105 @@ class Strategy extends BaseStrategy {
     }
 }
 
+//this feature is needed for case when not all who was invited picked my elevator so I need to invite some in next tick
+//elevator.id -> amount of invited in prev tick
+//null means "just ignore this feature"
+//undefined means "all who was invited are going (not catched by opponent)"
+//n > 0 means "in prev tick it invited n passengers"
+const INVITED_IN_PREV_TICK = [null, null, null, null, null, null, null, null, null];
+function markAsInvited(elevator, invitedPassengersAmount) {
+    INVITED_IN_PREV_TICK[elevator.id] = invitedPassengersAmount;
+}
+function dropInvitedCounter(elevator) {
+    INVITED_IN_PREV_TICK[elevator.id] = null;
+}
+function succeedInvitedCounter(elevator) {
+    INVITED_IN_PREV_TICK[elevator.id] = undefined;
+}
+function allWhoWasInvitedIsGoing(elevator, goingToAmount) {
+    return INVITED_IN_PREV_TICK !== null && (
+            INVITED_IN_PREV_TICK[elevator.id] === undefined ||
+            INVITED_IN_PREV_TICK[elevator.id] === goingToAmount
+        );
+}
+
 //Map(passenger -> id of elevator which plans to get this passenger)
-const PLANNING_PASSENGERS_IDS = [];
-function dropPlansAboutNotWaitingPassengers(allPassengers) {
-    allPassengers.forEach(p => {
-        if (p.state !== PAS_STATE.waitingForElevator && p.state !== PAS_STATE.movingToElevator) {
-            PLANNING_PASSENGERS_IDS[p.id] = undefined;
-        }
+let RESERVED_PASSENGERS = [];
+function resetReserved(elevator) {
+    RESERVED_PASSENGERS.forEach((elevId, passId) => {
+        if (elevId === elevator.id)
+            RESERVED_PASSENGERS[passId] = undefined;
     });
 }
 
-function markPassengersWhichElevatorPlanToWait(plan) {
-    const elevator = plan.actions[0].elevator;
-    PLANNING_PASSENGERS_IDS.forEach((elevId, i) => {
-        if (elevId === elevator.id)
-            PLANNING_PASSENGERS_IDS[i] = undefined;
-    });
+function reservePassengersForElevator(elevator, plan) {
     plan.actions.forEach(action => {
         if (action instanceof WaitAction) {
             action.passengers.forEach(p => {
-                PLANNING_PASSENGERS_IDS[p.id] = elevator.id;
+                RESERVED_PASSENGERS[p.id] = elevator.id;
             })
         }
     });
 }
+
+//Passengers who will reborn, each have passenger.ticksToReborn prop
+/*const PHANTOM_PASSENGERS = [];
+function updatePhantomPassengers(allElevators, allPassengers) {
+    //update current
+    PHANTOM_PASSENGERS.forEach((p, ind) => {
+        if (p) {
+            if (p.ticksToReborn === 0) {
+                PHANTOM_PASSENGERS[ind] = undefined;
+            } else {
+                p.ticksToReborn -= 1;
+            }
+        }
+    });
+    //add those who lifted to his destination floor by elevator
+    allElevators.forEach(elev => {
+        elev.passengers.forEach(p => {
+            if (p.destFloor === elev.floor && !PHANTOM_PASSENGERS[p.id] && !pasFinished(p.id)) {
+                PHANTOM_PASSENGERS[p.id] = p.makePhantom({
+                    ticksToReborn: OPEN_DOORS_TICKS + EXIT_FROM_ELEVATOR_TICKS + PHANTOM_TICKS,
+                    x: elev.type === 'FIRST_PLAYER' ? -20 : 20,
+                    floor: p.floor
+                });
+                incRebornCount(p.id);
+            }
+        });
+    });
+    //add those who can't wait anymore and going to stairs
+    allPassengers.forEach(p => {
+        if (!PHANTOM_PASSENGERS[p.id] && //probably impossible with other predicates but anyway...
+            !pasFinished(p.id) &&
+            p.timeToAway === 0 && (
+                p.state === PAS_STATE.waitingForElevator ||
+                p.state === PAS_STATE.movingToElevator ||
+                p.state === PAS_STATE.returning)
+        ) {
+            const oneFloorStairTicks = p.floor > p.destFloor ? 100 : 200;
+            PHANTOM_PASSENGERS[p.id] = p.makePhantom({
+                ticksToReborn: oneFloorStairTicks * Math.abs(p.destFloor - p.floor) + PHANTOM_TICKS,
+                x: p.type === 'FIRST_PLAYER' ? -20 : 20,
+                floor: p.destFloor
+            });
+            incRebornCount(p.id);
+        }
+    });
+}
+
+//Times each passenger already reborned
+const REBORN_COUNT = [];
+function pasFinished(id) {
+    return REBORN_COUNT[id] && REBORN_COUNT[id] === 5;
+}
+function incRebornCount(id) {
+    if (!REBORN_COUNT[id]) {
+        REBORN_COUNT[id] = 1;
+    } else {
+        REBORN_COUNT[id] += 1;
+    }
+}*/
 
 // Functions without side-effects --------------------------------------------------------------------------------------|
 
@@ -202,22 +292,29 @@ function groupPassengersByFloorAndSort(elevator, allPassengers) {
         return elevator.passengers.filter(p => p.destFloor === floor).length;
     });
     //todo probably not only by destFloor but by same direction (top or bottom)
-    const score = p => curPassengersAmount[p.destFloor] * 1000 - Math.abs(elevator.x - p.x) - (p.weight * 100);
+    const score = p => {
+        const curPasBonus = curPassengersAmount[p.destFloor] * 1000;
+        const dist = Math.abs(elevator.x - p.x);
+        const weight = p.weight * 100;
+        const opponentTypeBonus = p.type === elevator.type ? 0 : 1000;
+        const gameStartBonus = elevator.floor === 1 && curTick <= 1000 ? p.destFloor * 1100 : 0;
+        return curPasBonus + opponentTypeBonus + gameStartBonus - dist - weight;
+    };
     passengersByFloor.forEach(passengerz => passengerz.sort((p1, p2) => {
         return score(p2) - score(p1);
     }));
     return passengersByFloor;
 }
 
-function groupBy(passengers, fun) {
+function groupBy(passengers, fun, makeCopies = true) {
     const res = [[], [], [], [], [], [], [], [], [], []];
-    passengers.forEach(p => res[fun(p)].push(new Passenger(p)));
+    passengers.forEach(p => p && res[fun(p)].push(makeCopies ? new Passenger(p) : p));
     return res;
 }
 
-function filterPassengers(elevator, allPassengers) {
+function filterReservedPassengers(elevator, allPassengers) {
     return allPassengers.filter(p => {
-        const plannedByOtherElevator = PLANNING_PASSENGERS_IDS[p.id] && PLANNING_PASSENGERS_IDS[p.id] !== elevator.id;
+        const plannedByOtherElevator = RESERVED_PASSENGERS[p.id] && RESERVED_PASSENGERS[p.id] !== elevator.id;
         return !plannedByOtherElevator && (
                 p.state === PAS_STATE.waitingForElevator ||
                 p.state === PAS_STATE.returning ||
@@ -225,6 +322,36 @@ function filterPassengers(elevator, allPassengers) {
             );
     });
 }
+
+function removeWhoWontWait(elevator, allPassengers) {
+    return allPassengers.filter(p => {
+        const goAction = new GoAction(elevator, p.floor);
+        const delay = p.type === elevator.type ? 0 : Math.max(0, OPEN_DOORS_TICKS + TAKE_ENEMY_PASS_DELAY_TICKS - elevator.timeOnFloor);
+        const time2come = Math.floor(Math.abs(p.x - elevator.x) / PAS_HORIZONTAL_SPEED) + 1;
+        return p.timeToAway > goAction.ticks + delay + time2come + 1; // +1 for some reason...
+    });
+}
+
+/*function injectPhantoms(alivePassengers, elevator) {
+    const aliveWithPhantoms = alivePassengers.slice();
+    groupBy(PHANTOM_PASSENGERS, p => p.floor, false)
+        .map((phantoms, floor) => {
+            const ticksToThatFloor = new GoAction(elevator, floor).ticks;
+            const rebornSoonPhantoms = phantoms.filter(p => ticksToThatFloor >= p.ticksToReborn + 20);
+            //materialize only half of phantoms
+            return rebornSoonPhantoms.slice(10, Math.floor(rebornSoonPhantoms.length / 3));
+        }).forEach(phantoms => {
+        phantoms.forEach(phantom => {
+            const existingInd = aliveWithPhantoms.findIndex(alivePas => alivePas.id === phantom.id);
+            if (existingInd > -1) {
+                aliveWithPhantoms.splice(existingInd, 1, phantom);
+            } else {
+                aliveWithPhantoms.push(phantom);
+            }
+        });
+    });
+    return aliveWithPhantoms;
+}*/
 
 function emulate(elevator, passengers, action) {
     //creating copies of elevator and passengers
@@ -269,8 +396,19 @@ function distinct(passengersToWait, i, arr) {
 }
 
 function shouldGeneratePlan(elevator) {
-    return elevator.state === EL_STATE.filling &&
-        (elevator.timeOnFloor >= OPEN_DOORS_TICKS + STOP_TICKS_AFTER_OPEN_DOORS - 1 || curTick < 100);
+    return elevator.state === EL_STATE.filling;
+}
+
+function isStartFillingStage(elevator, myElevators, allPassengers) {
+    const firstFloorElevs = myElevators.filter(elev => elev.floor === 1 && elev.state === EL_STATE.filling);
+    const neededPas = firstFloorElevs.reduce((acc, elev) => acc + 20 - elev.passengers.length, 0);
+    const waitingPas = allPassengers.filter(pas => {
+        return pas.state === PAS_STATE.waitingForElevator ||
+                pas.state === PAS_STATE.returning
+    }).length;
+    const d = 4; //just heuristic value no physical sense
+    const enoughPasWillBorn = neededPas < (Math.floor((2000 - curTick) / 20) * 2 + waitingPas + d);
+    return curTick < 2000 && elevator.passengers.length < 20 && elevator.floor === 1 && enoughPasWillBorn;
 }
 
 // ---------------------------------------------------------------------------------------------------------------------|
@@ -281,14 +419,16 @@ class WaitAction {
         this.passengers = passengersToWait;
     }
     get ticks() {
-        let maxTime = 0;
+        const timeOnFloor = this.elevator.timeOnFloor;
+        let farestPassengerTime = 0;
         this.passengers.forEach(p => {
             const timeToCome = Math.floor(Math.abs(p.x - this.elevator.x) / PAS_HORIZONTAL_SPEED) + 1;
-            const enemyDelay = p.type === this.elevator.type ? 0 : Math.max(0, 40 - this.elevator.timeOnFloor);
+            const enemyDelay = p.type === this.elevator.type ? 0 : Math.max(0, TAKE_ENEMY_PASS_DELAY_TICKS - timeOnFloor);
             const factTime = timeToCome + enemyDelay;
-            maxTime = Math.max(maxTime, factTime);
+            farestPassengerTime = Math.max(farestPassengerTime, factTime);
         });
-        return maxTime;
+        const minTimeOnFloor = Math.max(0, OPEN_DOORS_TICKS + STOP_TICKS_AFTER_OPEN_DOORS - timeOnFloor);
+        return Math.max(minTimeOnFloor, farestPassengerTime);
     }
     get score() {
         return 0;
@@ -297,6 +437,7 @@ class WaitAction {
     execute(elevator, myPassengers, enemyPassengers) {
         this._setElevatorToPassengers(myPassengers);
         this._setElevatorToPassengers(enemyPassengers);
+        markAsInvited(elevator, this.passengers.length);
         log(`Elev ${elevator.id} will wait for ${this.passengers.length} passengers`);
     }
     _setElevatorToPassengers(passengers) {
@@ -318,16 +459,22 @@ class GoAction {
         this.passengers = passengers;
     }
     get ticks() {
-        let movingTicks = 0;
-        if (this.passengers.length === 0 || this.floor < this.elevator.floor) {
-            movingTicks = Math.abs(this.elevator.floor - this.floor) * EMPTY_ONE_FLOOR_TICKS;
+        if (this.elevator.floor === this.floor) {
+            return 0;
         } else {
-            const weightFactor = this.elevator.passengers.reduce((acc, p) => acc * p.weight, 1);
-            const overweightFactor = this.elevator.passengers.length > 10 ? 1.1 : 1;
-            const oneFloorTicks = EMPTY_ONE_FLOOR_TICKS * weightFactor * overweightFactor;
-            movingTicks = Math.abs(this.elevator.floor - this.floor) * oneFloorTicks;
+            let movingTicks = 0;
+            if (this.passengers.length === 0 || this.floor < this.elevator.floor) {
+                movingTicks = Math.abs(this.elevator.floor - this.floor) * EMPTY_ONE_FLOOR_TICKS;
+            } else {
+                const weightFactor = this.elevator.passengers.reduce((acc, p) => acc * p.weight, 1);
+                const overweightFactor = this.elevator.passengers.length > 10 ? 1.1 : 1;
+                const oneFloorTicks = EMPTY_ONE_FLOOR_TICKS * weightFactor * overweightFactor;
+                movingTicks = Math.abs(this.elevator.floor - this.floor) * oneFloorTicks;
+            }
+            movingTicks = Math.abs(movingTicks - Math.floor(movingTicks)) < 0.00001 ? movingTicks : (Math.floor(movingTicks) + 1);
+            const minTimeOnFloor = Math.max(0, OPEN_DOORS_TICKS + STOP_TICKS_AFTER_OPEN_DOORS - this.elevator.timeOnFloor);
+            return minTimeOnFloor + CLOSE_DOORS_TICKS + movingTicks + OPEN_DOORS_TICKS;
         }
-        return Math.floor(CLOSE_DOORS_TICKS + movingTicks + OPEN_DOORS_TICKS) + 1;
     }
     get score() {
         return this.passengers.reduce((acc, p) => {
@@ -337,6 +484,7 @@ class GoAction {
     //MUTATES ELEVATOR!
     execute(elevator, myPassengers, enemyPassengers) {
         elevator.goToFloor(this.floor);
+        dropInvitedCounter(elevator);
         log(`Elev ${elevator.id} will go to ${this.floor} to lift ${this.passengers.length} passenger(s)`);
     }
     toJSON() {
@@ -359,9 +507,12 @@ class Plan {
         if (this.actions.length) {
             //todo penalty for going in area where less my current passengers want to be?
             //penalty for distance which would be passed by lift
-            const penalty = this.actions.reduce((acc, a) => {
-                return acc + (a.floor && Math.abs(a.floor - elevator.floor) || 0);
-            }, 0) * 100;
+            const penalty = this.actions
+                .map(a => a.floor)
+                .filter(f => f !== undefined)
+                .reduce((acc, floor, i, floors) => {
+                    return acc + Math.abs(floor - (i === 0 ? elevator.floor : floors[i - 1]));
+                }, 0) * 80;
             newPlan.floorPenalty = this.floorPenalty + penalty;
         }
         newPlan.actions = this.actions.slice();
@@ -452,6 +603,25 @@ class Passenger {
         this.timeToAway = this._timeToAway;
     }
 
+    //when cloning passenger with `new Passenger(p)` phantom prop `ticksToReborn` will be dropped
+    makePhantom({ticksToReborn, x, floor}) {
+        const phantom = new Passenger({
+            id: this.id,
+            _elevator: undefined,
+            _fromFloor: floor,
+            _destFloor: curTick < 6000 ? randomIntFromTo(2, 9) : 1,
+            _timeToAway: TIME_TO_AWAY,
+            _state: PAS_STATE.waitingForElevator,
+            _floor: floor,
+            _type: this.type,
+            _x: x,
+            _y: floor,
+            _weight: this.weight
+        });
+        phantom.ticksToReborn = ticksToReborn;
+        return phantom;
+    }
+
     toJSON() {
         return `Pass(state: ${this.state}, floor: ${this.floor}, elev: ${(this.elevator && this.elevator.id) || this.elevator})`;
     }
@@ -474,6 +644,10 @@ function addXToElevators(elevators) {
         elev.x = sign * (60 + 80 * i);
         elev._x = elev.x;
     });
+}
+
+function randomIntFromTo(from, to) {
+    return Math.floor(Math.random() * (to - from + 1) + from);
 }
 
 module.exports.Strategy = Strategy;
