@@ -57,7 +57,7 @@ class Strategy extends BaseStrategy {
             if (planScore > bestPlanScore ||
                 (planScore === bestPlanScore && plan.ticks < bestPlan.ticks)) {
                 bestPlan = plan;
-                log(`${new Elevator(elevator).toJSON()} new plan: ${dropQuotes(JSON.stringify(plan))}`);
+                //log(`${new Elevator(elevator).toJSON()} new plan: ${dropQuotes(JSON.stringify(plan))}`);
             }
         };
 
@@ -118,14 +118,14 @@ class Strategy extends BaseStrategy {
         const myElevatorz = copyElevators(myElevators);
         const enemyElevatorz = copyElevators(enemyElevators);
         updatePhantomPassengers(myElevatorz, enemyElevatorz, allPassengers);
-        log('phantoms: ' + PHANTOM_PASSENGERS.filter(p => p).map(p => JSON.stringify(p)));
+        //log('phantoms: ' + PHANTOM_PASSENGERS.filter(p => p).map(p => JSON.stringify(p)));
         updateLastInvited(allPassengers);
         addXToElevators(myElevators);
         myElevators.forEach((elevator, ind) => {
             inviteAllWhoInvited(elevator, myPassengers, enemyPassengers);
-            if (curTick < 6499 && someoneInvited(elevator) && !someoneGoingToOpponent(elevator)) {
+            if (curTick < 6499 && !someoneWasBorn() && someoneInvited(elevator) && !someoneInvitedGoingToOpponent(elevator)) {
                 //relax and wait for those who going to elevator
-                log(`${new Elevator(elevator).toJSON()} just wait for ${LAST_INVITED[elevator.id].filter(p => !p.isPhantom).length} passengers and ${LAST_INVITED[elevator.id].filter(p => p.isPhantom).length} phantoms`);
+                //log(`${new Elevator(elevator).toJSON()} just wait for ${LAST_INVITED[elevator.id].filter(p => !p.isPhantom).length} passengers and ${LAST_INVITED[elevator.id].filter(p => p.isPhantom).length} phantoms`);
                 elevator.goToFloor(elevator.floor);
                 if (allInvitedCame(elevator) || somePhantomReborned(elevator) || elevator.passengers.length === 20) {
                     dropInvited(elevator);
@@ -171,15 +171,15 @@ class Strategy extends BaseStrategy {
                                     maxScore = score;
                                 }
                             });
-                            log(`${new Elevator(elevator).toJSON()} no plan, lift someone to ${bestFloor} floor for ${maxScore} score`);
+                            //log(`${new Elevator(elevator).toJSON()} no plan, lift someone to ${bestFloor} floor for ${maxScore} score`);
                             elevator.goToFloor(bestFloor);
                         } else {
-                            log(`${new Elevator(elevator).toJSON()} no plan and have passengers in elevator but no time to lift someone`);
+                            //log(`${new Elevator(elevator).toJSON()} no plan and have passengers in elevator but no time to lift someone`);
                         }
                     } else {
                         //no plan and no passengers -- go to potentially good floor
                         const floor = curTick <= 1400 ? 1 : (curTick <= 6000 ? 5 : 9);
-                        log(`${new Elevator(elevator).toJSON()} no plan and no passengers in elevator, go to potentially good floor ${floor}`);
+                        //log(`${new Elevator(elevator).toJSON()} no plan and no passengers in elevator, go to potentially good floor ${floor}`);
                         elevator.goToFloor(floor);
                     }
                 }
@@ -207,7 +207,7 @@ function dropInvited(elevator) {
 function someoneInvited(elevator) {
     return LAST_INVITED[elevator.id].length !== 0;
 }
-function someoneGoingToOpponent(elevator) {
+function someoneInvitedGoingToOpponent(elevator) {
     return LAST_INVITED[elevator.id].find(p => p.goingToOpponent(elevator))
 }
 function allInvitedCame(elevator) {
@@ -480,6 +480,10 @@ function copyElevators(elevators) {
     });
 }
 
+function someoneWasBorn() {
+    return curTick <= 2001 && (curTick % 20 === 1);
+}
+
 // ---------------------------------------------------------------------------------------------------------------------|
 
 class WaitAction {
@@ -508,7 +512,7 @@ class WaitAction {
         this._setElevatorToPassengers(myPassengers);
         this._setElevatorToPassengers(enemyPassengers);
         markAsInvited(elevator, this.passengers);
-        log(`Elev ${elevator.id} will wait for ${this.passengers.length} passengers (${this.passengers.filter(p => p.isPhantom).length} phantoms)`);
+        //log(`Elev ${elevator.id} will wait for ${this.passengers.length} passengers (${this.passengers.filter(p => p.isPhantom).length} phantoms)`);
     }
     _setElevatorToPassengers(passengers) {
         passengers.forEach(p => {
@@ -555,7 +559,7 @@ class GoAction {
     execute(elevator, myPassengers, enemyPassengers) {
         elevator.goToFloor(this.floor);
         dropInvited(elevator);
-        log(`Elev ${elevator.id} will go to ${this.floor} to lift ${this.passengers.length} passenger(s)`);
+        //log(`Elev ${elevator.id} will go to ${this.floor} to lift ${this.passengers.length} passenger(s)`);
     }
     toJSON() {
         return `GoAction(floor: ${this.floor}, pass: ${this.passengers.length}, ticks: ${this.ticks})`;
