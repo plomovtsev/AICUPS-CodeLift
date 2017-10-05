@@ -32,6 +32,7 @@ const AICUP_LOGS = false;
 
 let curTick = 0;
 let that;
+let knownPhantomsCounter = 0;
 
 class Strategy extends BaseStrategy {
 
@@ -133,7 +134,7 @@ class Strategy extends BaseStrategy {
             } else {
                 dropInvited(elevator);
                 if (isStartFillingStage(elevator, myElevators, allPassengers)) {
-                    let minFloor = [8, 7, 6, 5][ind] - Math.floor(curTick / 850);
+                    let minFloor = [8, 7, 6, 4][ind];
                     const visiblePassengers = filterReservedPassengers(elevator, allPassengers);
                     const accessiblePassengers = removeWhoWontWait(elevator, visiblePassengers);
                     const passengersToWait = accessiblePassengers.filter(p => p.destFloor >= minFloor && p.floor === 1);
@@ -185,8 +186,10 @@ class Strategy extends BaseStrategy {
                 }
             }
         });
-        if (curTick === GAME_LEN)
+        if (curTick === GAME_LEN) {
             console.timeEnd("Execution time");
+            console.log(`Predicted ${knownPhantomsCounter} phantom's destFloors by their pair`);
+        }
     }
 }
 
@@ -394,9 +397,10 @@ function injectPhantoms(elevator, alivePassengers) {
     groupBy(PHANTOM_PASSENGERS, p => p.floor, false)
         .map((phantoms, floor) => {
             const ticksToThatFloor = new GoAction(elevator, floor).ticks;
-            const rebornSoonPhantoms = phantoms.filter(p => ticksToThatFloor >= p.ticksToReborn - 5);
+            const rebornSoonPhantoms = phantoms.filter(p => ticksToThatFloor >= p.ticksToReborn - 250);
             //materialize only half of phantoms
-            return rebornSoonPhantoms.slice(0, Math.floor(rebornSoonPhantoms.length / 2));
+            const phantomFactor = [0, 0, 0.9, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 1];
+            return rebornSoonPhantoms.slice(0, Math.floor(rebornSoonPhantoms.length * phantomFactor[floor]));
         }).forEach(phantoms => {
             phantoms.forEach(phantom => {
                 const existingInd = aliveWithPhantoms.findIndex(alivePas => alivePas.id === phantom.id);
@@ -466,8 +470,7 @@ function isStartFillingStage(elevator, myElevators, allPassengers) {
                 pas.state === PAS_STATE.returning
             )
     }).length;
-    const d = 4; //just heuristic value no physical sense
-    const enoughPasWillBorn = neededPas < (Math.floor((2000 - curTick) / 20) * 2 + waitingPas + d);
+    const enoughPasWillBorn = neededPas < (Math.floor((2000 - curTick) / 20) * 2 + waitingPas);
     return curTick < 2000 && elevator.passengers.length < 20 && elevator.floor === 1 && enoughPasWillBorn;
 }
 
@@ -683,15 +686,22 @@ class Passenger {
     }
 
     makePhantom({ticksToReborn, x, floor}) {
-        let destFloor = randomIntFromTo(2, 9);
+        const pairId = this.id + (this.id % 2 === 0 ? -1 : 1);
+        let destFloor;
+        if (PAS_VISITED[pairId] && (PAS_VISITED[pairId].length > PAS_VISITED[this.id].length)) {
+            destFloor = PAS_VISITED[pairId][PAS_VISITED[this.id].length + 1];
+            knownPhantomsCounter += 1;
+        } else {
+            destFloor = PAS_VISITED[this.id].length === 4 ? 1 : randomIntFromTo(1, 9);
+        }
         while (PAS_VISITED[this.id].find(f => f === destFloor)) {
-            destFloor = randomIntFromTo(2, 9);
+            destFloor = randomIntFromTo(1, 9);
         }
         return new Passenger({
             id: this.id,
             _elevator: undefined,
             _fromFloor: floor,
-            _destFloor: curTick < 6000 ? destFloor : 1,
+            _destFloor: destFloor,
             _timeToAway: TIME_TO_AWAY,
             _state: PAS_STATE.waitingForElevator,
             _floor: floor,
