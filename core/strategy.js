@@ -122,6 +122,7 @@ class Strategy extends BaseStrategy {
         //log('phantoms: ' + PHANTOM_PASSENGERS.filter(p => p).map(p => JSON.stringify(p)));
         updateLastInvited(allPassengers);
         addXToElevators(myElevators);
+        updateClosingStates(myElevators.concat(enemyElevators));
         myElevators.forEach((elevator, ind) => {
             inviteAllWhoInvited(elevator, myPassengers, enemyPassengers);
             if (curTick < 6499 && !someoneWasBorn() && someoneInvited(elevator) && !someoneInvitedGoingToOpponent(elevator)) {
@@ -149,7 +150,8 @@ class Strategy extends BaseStrategy {
                     resetReserved(elevator);
                     const withPhantoms = injectPhantoms(elevator, allPassengers);
                     const visiblePassengers = filterReservedPassengers(elevator, withPhantoms);
-                    const accessiblePassengers = removeWhoWontWait(elevator, visiblePassengers);
+                    let accessiblePassengers = removeWhoWontWait(elevator, visiblePassengers);
+                    // accessiblePassengers = dropWhoWillBeEarlierTakenByEnemy(elevator, enemyElevators, accessiblePassengers);
                     const plan = this.generatePlan(elevator, accessiblePassengers);
                     if (!plan.isEmpty()) {
                         //have a plan -- execute it
@@ -353,12 +355,13 @@ function groupPassengersByFloorAndSort(elevator, allPassengers) {
     });
     //todo probably not only by destFloor but by same direction (top or bottom)
     const score = p => {
-        const curPasBonus = curPassengersAmount[p.destFloor] * 1000;
+        const curPasBonus = curPassengersAmount[p.destFloor] * curPassengersAmount[p.destFloor] * 200;
         const dist = Math.abs(elevator.x - p.x);
         const weight = p.weight * 100;
         const opponentTypeBonus = p.type === elevator.type ? 0 : 1000;
         const gameStartBonus = elevator.floor === 1 && curTick <= 1000 ? p.destFloor * 1100 : 0;
-        return curPasBonus + opponentTypeBonus + gameStartBonus - dist - weight;
+        const destDistBonus = Math.abs(p.floor - p.destFloor) * 1000 * (opponentTypeBonus ? 2 : 1);
+        return curPasBonus + opponentTypeBonus + gameStartBonus + destDistBonus - dist - weight;
     };
     passengersByFloor.forEach(passengerz => passengerz.sort((p1, p2) => {
         return score(p2) - score(p1);
@@ -397,7 +400,7 @@ function injectPhantoms(elevator, alivePassengers) {
     groupBy(PHANTOM_PASSENGERS, p => p.floor, false)
         .map((phantoms, floor) => {
             const ticksToThatFloor = new GoAction(elevator, floor).ticks;
-            const rebornSoonPhantoms = phantoms.filter(p => ticksToThatFloor >= p.ticksToReborn - 250);
+            const rebornSoonPhantoms = phantoms.filter(p => ticksToThatFloor >= p.ticksToReborn - 300);
             //materialize only half of phantoms
             const phantomFactor = [0, 0, 0.9, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 1];
             return rebornSoonPhantoms.slice(0, Math.floor(rebornSoonPhantoms.length * phantomFactor[floor]));
@@ -412,6 +415,76 @@ function injectPhantoms(elevator, alivePassengers) {
             });
         });
     return aliveWithPhantoms;
+}
+
+const WHEN_ELEV_STARTED_CLOSING = [];
+function updateClosingStates(elevators) {
+    elevators.forEach(elev => {
+        if (elev.state === EL_STATE.closing && !WHEN_ELEV_STARTED_CLOSING[elev.id]) {
+            WHEN_ELEV_STARTED_CLOSING[elev.id] = curTick;
+        } else if (elev.state !== EL_STATE.closing && WHEN_ELEV_STARTED_CLOSING[elev.id]) {
+            WHEN_ELEV_STARTED_CLOSING[elev.id] = false;
+        }
+    });
+}
+function dropWhoWillBeEarlierTakenByEnemy(myElevator, enemyElevators, passengers) {
+    const dangerElevs = enemyElevators.filter(elev => {
+        return [EL_STATE.closing, EL_STATE.waiting, EL_STATE.moving, EL_STATE.opening].includes(elev.state);
+    });
+    if (dangerElevs.length) {
+        const newPassengers = passengers.filter(p => !p.isPhantom);
+        dangerElevs.forEach(elev => {
+            const pasGroupedByFloor = groupBy(newPassengers, p => p.floor);
+            const nextFloor = elev.state === EL_STATE.opening ? elev.floor : elev.nextFloor;
+            const nextFloorPassengers = pasGroupedByFloor[nextFloor];
+            if (nextFloorPassengers.length) {
+                const my = [];
+                const his = [];
+                nextFloorPassengers.forEach(p => {
+                    if (p.type === myElevator.type) {
+                        my.push(p);
+                    } else {
+                        his.push(p);
+                    }
+                });
+                const myTime = new GoAction(myElevator, nextFloor).ticks;
+                let hisTime;
+                if (elev.state === EL_STATE.closing) {
+                    const closingTicks = CLOSE_DOORS_TICKS - (curTick - WHEN_ELEV_STARTED_CLOSING[elev.id]);
+                    hisTime = closingTicks + new GoAction(elev, nextFloor).movingTicks + OPEN_DOORS_TICKS;
+                } else if (elev.state === EL_STATE.moving || elev.state === EL_STATE.waiting) {
+                    hisTime = new GoAction(elev, nextFloor).movingTicks + OPEN_DOORS_TICKS;
+                } else if (elev.state === EL_STATE.opening) {
+                    hisTime = OPEN_DOORS_TICKS - elev.timeOnFloor;
+                }
+                const willTakeMyEarlier = my.length && (
+                    myTime > hisTime + TAKE_ENEMY_PASS_DELAY_TICKS ||
+                    myTime === hisTime + TAKE_ENEMY_PASS_DELAY_TICKS && Math.abs(my[0].x - myElevator.x) > Math.abs(my[0].x - elev.x)
+                );
+                const willTakeHisEarlier = his.length && (
+                    myTime + TAKE_ENEMY_PASS_DELAY_TICKS > hisTime ||
+                    myTime + TAKE_ENEMY_PASS_DELAY_TICKS === hisTime && Math.abs(his[0].x - myElevator.x) > Math.abs(his[0].x - elev.x)
+                );
+                let potentialTaken = (willTakeMyEarlier ? my : []).concat(willTakeHisEarlier ? his : []);
+                const freeSlots = 20 - elev.passengers.length + elev.passengers.filter(p => p.destFloor === nextFloor).length;
+                if (potentialTaken.length > freeSlots) {
+                    const destFloors = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+                    elev.passengers.forEach(p => destFloors[p.destFloor] += 1);
+                    potentialTaken.sort((p1, p2) => destFloors[p2.destFloor] - destFloors[p1.destFloor]);
+                    potentialTaken = potentialTaken.slice(0, freeSlots);
+                }
+                potentialTaken.forEach(takenPas => {
+                    const ind = newPassengers.findIndex(np => np.id === takenPas.id);
+                    if (ind) {
+                        newPassengers.splice(ind, 1);
+                        log(`${myElevator.id} is slower than ${elev.id} to take passenger from ${nextFloor} floor`);
+                    }
+                });
+            }
+        });
+        return newPassengers;
+    }
+    return passengers;
 }
 
 function emulate(elevator, passengers, action) {
@@ -508,7 +581,7 @@ class WaitAction {
         return Math.max(minTimeOnFloor, farestPassengerTime);
     }
     get score() {
-        return 0;
+        return this.elevator.floor === 9 ? this.passengers.reduce((acc ,p) => acc + (p.type === this.elevator.type ? 10 : 20), 0) : 0;
     }
     //MUTATES PASSENGERS!
     execute(elevator, myPassengers, enemyPassengers) {
@@ -536,22 +609,25 @@ class GoAction {
         this.passengers = passengers;
     }
     get ticks() {
-        if (this.elevator.floor === this.floor) {
-            return 0;
+        if (Math.abs(this.elevator.y - Math.floor(this.elevator.y)) < 0.0001 && this.elevator.floor === this.floor) {
+            return Math.max(0, OPEN_DOORS_TICKS - this.elevator.timeOnFloor);
         } else {
-            let movingTicks = 0;
-            if (this.passengers.length === 0 || this.floor < this.elevator.floor) {
-                movingTicks = Math.abs(this.elevator.floor - this.floor) * EMPTY_ONE_FLOOR_TICKS;
-            } else {
-                const weightFactor = this.elevator.passengers.reduce((acc, p) => acc * p.weight, 1);
-                const overweightFactor = this.elevator.passengers.length > 10 ? 1.1 : 1;
-                const oneFloorTicks = EMPTY_ONE_FLOOR_TICKS * weightFactor * overweightFactor;
-                movingTicks = Math.abs(this.elevator.floor - this.floor) * oneFloorTicks;
-            }
-            movingTicks = Math.abs(movingTicks - Math.floor(movingTicks)) < 0.00001 ? movingTicks : (Math.floor(movingTicks) + 1);
             const minTimeOnFloor = Math.max(0, OPEN_DOORS_TICKS + STOP_TICKS_AFTER_OPEN_DOORS - this.elevator.timeOnFloor);
-            return minTimeOnFloor + CLOSE_DOORS_TICKS + movingTicks + OPEN_DOORS_TICKS;
+            return minTimeOnFloor + CLOSE_DOORS_TICKS + this.movingTicks + OPEN_DOORS_TICKS;
         }
+    }
+    get movingTicks() {
+        let mt = 0;
+        if (this.passengers.length === 0 || this.floor < this.elevator.floor) {
+            mt = Math.abs(this.elevator.y - this.floor) * EMPTY_ONE_FLOOR_TICKS;
+        } else {
+            const weightFactor = this.elevator.passengers.reduce((acc, p) => acc * p.weight, 1);
+            const overweightFactor = this.elevator.passengers.length > 10 ? 1.1 : 1;
+            const oneFloorTicks = EMPTY_ONE_FLOOR_TICKS * weightFactor * overweightFactor;
+            mt = Math.abs(this.elevator.y - this.floor) * oneFloorTicks;
+        }
+        mt = Math.abs(mt - Math.floor(mt)) < 0.00001 ? mt : (Math.floor(mt) + 1);
+        return mt;
     }
     get score() {
         return this.passengers.reduce((acc, p) => {
